@@ -34,6 +34,7 @@ TINY_LLAMA = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 TINY_LLAVA = "hf-internal-testing/tiny-random-LlavaForConditionalGeneration"
 TINY_XLMR = "hf-internal-testing/tiny-xlm-roberta"
 TINY_ALTCLIP = "hf-internal-testing/tiny-random-AltCLIPModel"
+TINY_VIDEOMAE = "hf-internal-testing/tiny-random-VideoMAEModel"
 
 # Uneven lengths, so that padding is actually applied and the padded side is observable.
 RAGGED_BATCH = ["hi", "a considerably longer sentence than the other one"]
@@ -1809,6 +1810,37 @@ class TestModelLoading:
         monkeypatch.setattr(transformer_module, "find_adapter_config_file", lambda *a, **kw: "some_file")
         with pytest.raises(ValueError, match="PEFT models can currently only be loaded"):
             Transformer(TINY_BERT, backend="onnx")
+
+    @pytest.mark.skipif(
+        parse_version(torch.__version__) < Version("2.6"),
+        reason="transformers v5 requires torch>=2.6 to load pytorch_model.bin checkpoints (CVE-2025-32434)",
+    )
+    @pytest.mark.skipif(not is_torchvision_available(), reason="Loading the VideoMAE processors requires torchvision")
+    def test_video_only_model_loads_video_processor(self):
+        """A video-only model whose checkpoint resolves to an image processor should use its video processor."""
+        transformer = Transformer(TINY_VIDEOMAE)
+        assert type(transformer.processor).__name__ == "VideoMAEVideoProcessor"
+        assert transformer.modalities == ["video"]
+
+    @pytest.mark.skipif(
+        parse_version(torch.__version__) < Version("2.6"),
+        reason="transformers v5 requires torch>=2.6 to load pytorch_model.bin checkpoints (CVE-2025-32434)",
+    )
+    @pytest.mark.skipif(not is_torchvision_available(), reason="Loading the VideoMAE processors requires torchvision")
+    def test_video_only_model_keeps_image_processor_if_video_processor_fails(self, monkeypatch):
+        """If the video processor cannot be loaded, the image processor from AutoProcessor should be kept."""
+
+        def raise_boom(*a, **kw):
+            raise OSError("boom")
+
+        monkeypatch.setattr(transformer_module.AutoVideoProcessor, "from_pretrained", raise_boom)
+        debug_messages: list[str] = []
+        monkeypatch.setattr(transformer_module.logger, "debug", debug_messages.append)
+
+        transformer = Transformer(TINY_VIDEOMAE)
+        assert type(transformer.processor).__name__ == "VideoMAEImageProcessor"
+        assert transformer.modalities == ["image"]
+        assert any("Could not load a video processor" in message for message in debug_messages)
 
 
 class TestModalityInference:
